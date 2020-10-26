@@ -23,9 +23,11 @@
 
 #include <algorithm>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -39,11 +41,42 @@ static SpecTest T(std::filesystem::u8path("../spec/testSuites"sv));
 class CoreTest : public testing::TestWithParam<std::string> {};
 
 TEST_P(CoreTest, TestSuites) {
-  const std::string UnitName = GetParam();
-  SSVM::VM::Configure Conf;
-  SSVM::VM::VM VM(Conf);
-  SSVM::SpecTestModule SpecTestMod;
-  VM.registerModule(SpecTestMod);
+  const auto kWorkerSize = std::thread::hardware_concurrency();
+  struct alignas(32) WorkerData {
+    std::packaged_task<size_t(size_t)> TaskReady{[](size_t I) { return I; }};
+    std::packaged_task<Expect<void>(SSVM::VM::VM &)> NormalTask;
+    std::packaged_task<Expect<std::vector<ValVariant>>(SSVM::VM::VM &)>
+        ExecuteTask;
+  };
+
+  std::vector<WorkerData> Datas(kWorkerSize);
+  std::vector<std::thread> Workers;
+  Workers.reserve(kWorkerSize);
+  for (size_t I = 0; I < kWorkerSize; ++I) {
+    Workers.emplace_back([&Datas, I]() {
+      SSVM::VM::Configure Conf;
+      SSVM::VM::VM VM(Conf);
+      SSVM::SpecTestModule SpecTestMod;
+      VM.registerModule(SpecTestMod);
+
+      while (true) {
+        auto TaskReady = Datas[I].TaskReady.get_future();
+        const auto Command = TaskReady.get();
+        Datas[I].TaskReady.reset();
+        switch (Command) {
+        case 0:
+          return;
+        case 1:
+          Datas[I].NormalTask(VM);
+          break;
+        case 2:
+          Datas[I].ExecuteTask(VM);
+          break;
+        }
+      }
+    });
+  }
+
   auto Compile = [&](const std::string &Filename) -> Expect<std::string> {
     SSVM::Loader::Loader Loader;
     SSVM::Validator::Validator ValidatorEngine;
@@ -63,74 +96,129 @@ TEST_P(CoreTest, TestSuites) {
     }
     return SOPath;
   };
-  T.onModule = [&VM, &Compile](const std::string &ModName,
-                               const std::string &Filename) -> Expect<void> {
+  auto CallVM =
+      [&Datas](
+          std::function<Expect<void>(SSVM::VM::VM &)> Task) -> Expect<void> {
+    std::vector<std::future<Expect<void>>> Futures;
+    Futures.reserve(Datas.size());
+    for (auto &Data : Datas) {
+      Data.NormalTask = std::packaged_task<Expect<void>(SSVM::VM::VM &)>(Task);
+      Futures.emplace_back(Data.NormalTask.get_future());
+    }
+    for (auto &Data : Datas) {
+      Data.TaskReady(1);
+    }
+    for (auto &Future : Futures) {
+      Future.wait();
+    }
+    std::vector<Expect<void>> Results;
+    Results.reserve(Datas.size());
+    for (auto &Future : Futures) {
+      Results.push_back(Future.get());
+    }
+    return std::move(Results[0]);
+  };
+  auto ExecuteVM =
+      [&Datas](
+          std::function<Expect<std::vector<ValVariant>>(SSVM::VM::VM &)> Task)
+      -> Expect<std::vector<ValVariant>> {
+    std::vector<std::future<Expect<std::vector<ValVariant>>>> Futures;
+    Futures.reserve(Datas.size());
+    for (auto &Data : Datas) {
+      Data.ExecuteTask =
+          std::packaged_task<Expect<std::vector<ValVariant>>(SSVM::VM::VM &)>(
+              Task);
+      Futures.emplace_back(Data.ExecuteTask.get_future());
+    }
+    for (auto &Data : Datas) {
+      Data.TaskReady(2);
+    }
+    for (auto &Future : Futures) {
+      Future.wait();
+    }
+    std::vector<Expect<std::vector<ValVariant>>> Results;
+    Results.reserve(Datas.size());
+    for (auto &Future : Futures) {
+      Results.push_back(Future.get());
+    }
+    return std::move(Results[0]);
+  };
+  T.onModule = [&CallVM, &Compile](const std::string &ModName,
+                                   const std::string &Filename) {
     return Compile(Filename).and_then(
-        [&VM, &ModName](const std::string &SOFilename) -> Expect<void> {
-          if (!ModName.empty()) {
-            return VM.registerModule(ModName, SOFilename);
-          } else {
-            return VM.loadWasm(SOFilename)
-                .and_then([&VM]() { return VM.validate(); })
-                .and_then([&VM]() { return VM.instantiate(); });
-          }
+        [&CallVM, &ModName](const std::string &SOFilename) {
+          return CallVM([&ModName, &SOFilename](SSVM::VM::VM &VM) {
+            if (!ModName.empty()) {
+              return VM.registerModule(ModName, SOFilename);
+            } else {
+              return VM.loadWasm(SOFilename)
+                  .and_then([&VM]() { return VM.validate(); })
+                  .and_then([&VM]() { return VM.instantiate(); });
+            }
+          });
         });
   };
-  T.onValidate = [&VM, &Compile](const std::string &Filename) -> Expect<void> {
-    return Compile(Filename)
-        .and_then([&](const std::string &SOFilename) -> Expect<void> {
-          return VM.loadWasm(SOFilename);
-        })
-        .and_then([&VM]() { return VM.validate(); });
+  T.onValidate = [&CallVM, &Compile](const std::string &Filename) {
+    return Compile(Filename).and_then([&CallVM](const std::string &SOFilename) {
+      return CallVM([&SOFilename](SSVM::VM::VM &VM) {
+        return VM.loadWasm(SOFilename).and_then([&VM]() {
+          return VM.validate();
+        });
+      });
+    });
   };
-  T.onInstantiate = [&VM,
-                     &Compile](const std::string &Filename) -> Expect<void> {
-    return Compile(Filename)
-        .and_then([&](const std::string &SOFilename) -> Expect<void> {
-          return VM.loadWasm(SOFilename);
-        })
-        .and_then([&VM]() { return VM.validate(); })
-        .and_then([&VM]() { return VM.instantiate(); });
+  T.onInstantiate = [&CallVM, &Compile](const std::string &Filename) {
+    return Compile(Filename).and_then([&CallVM](const std::string &SOFilename) {
+      return CallVM([&SOFilename](SSVM::VM::VM &VM) {
+        return VM.loadWasm(SOFilename)
+            .and_then([&VM]() { return VM.validate(); })
+            .and_then([&VM]() { return VM.instantiate(); });
+      });
+    });
   };
   /// Helper function to call functions.
-  T.onInvoke = [&VM](const std::string &ModName, const std::string &Field,
-                     const std::vector<ValVariant> &Params)
-      -> Expect<std::vector<ValVariant>> {
-    if (!ModName.empty()) {
-      /// Invoke function of named module. Named modules are registered in
-      /// Store Manager.
-      return VM.execute(ModName, Field, Params);
-    } else {
-      /// Invoke function of anonymous module. Anonymous modules are
-      /// instantiated in VM.
-      return VM.execute(Field, Params);
-    }
+  T.onInvoke = [&ExecuteVM](const std::string &ModName,
+                            const std::string &Field,
+                            const std::vector<ValVariant> &Params) {
+    return ExecuteVM([&ModName, &Field, &Params](SSVM::VM::VM &VM) {
+      if (!ModName.empty()) {
+        /// Invoke function of named module. Named modules are registered in
+        /// Store Manager.
+        return VM.execute(ModName, Field, Params);
+      } else {
+        /// Invoke function of anonymous module. Anonymous modules are
+        /// instantiated in VM.
+        return VM.execute(Field, Params);
+      }
+    });
   };
   /// Helper function to get values.
-  T.onGet = [&VM](const std::string &ModName,
-                  const std::string &Field) -> Expect<std::vector<ValVariant>> {
-    /// Get module instance.
-    auto &Store = VM.getStoreManager();
-    SSVM::Runtime::Instance::ModuleInstance *ModInst = nullptr;
-    if (ModName.empty()) {
-      ModInst = *Store.getActiveModule();
-    } else {
-      if (auto Res = Store.findModule(ModName)) {
-        ModInst = *Res;
+  T.onGet = [&ExecuteVM](const std::string &ModName, const std::string &Field) {
+    return ExecuteVM([&ModName, &Field](
+                         SSVM::VM::VM &VM) -> Expect<std::vector<ValVariant>> {
+      /// Get module instance.
+      auto &Store = VM.getStoreManager();
+      SSVM::Runtime::Instance::ModuleInstance *ModInst = nullptr;
+      if (ModName.empty()) {
+        ModInst = *Store.getActiveModule();
       } else {
-        return Unexpect(Res);
+        if (auto Res = Store.findModule(ModName)) {
+          ModInst = *Res;
+        } else {
+          return Unexpect(Res);
+        }
       }
-    }
 
-    /// Get global instance.
-    auto &Globs = ModInst->getGlobalExports();
-    if (Globs.find(Field) == Globs.cend()) {
-      return Unexpect(ErrCode::IncompatibleImportType);
-    }
-    uint32_t GlobAddr = Globs.find(Field)->second;
-    auto *GlobInst = *Store.getGlobal(GlobAddr);
+      /// Get global instance.
+      auto &Globs = ModInst->getGlobalExports();
+      if (Globs.find(Field) == Globs.cend()) {
+        return Unexpect(ErrCode::IncompatibleImportType);
+      }
+      uint32_t GlobAddr = Globs.find(Field)->second;
+      auto *GlobInst = *Store.getGlobal(GlobAddr);
 
-    return std::vector<SSVM::ValVariant>{GlobInst->getValue()};
+      return std::vector<SSVM::ValVariant>{GlobInst->getValue()};
+    });
   };
   T.onCompare =
       [](const std::vector<std::pair<std::string, std::string>> &Expected,
@@ -214,7 +302,15 @@ TEST_P(CoreTest, TestSuites) {
     return true;
   };
 
+  const std::string UnitName = GetParam();
   T.run(UnitName);
+
+  for (auto &Data : Datas) {
+    Data.TaskReady(0);
+  }
+  for (size_t I = 0; I < kWorkerSize; ++I) {
+    Workers[I].join();
+  }
 }
 
 /// Initiate test suite.
