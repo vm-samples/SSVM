@@ -220,6 +220,11 @@ std::ostream &operator<<(std::ostream &OS, const struct InfoInstruction &Rhs) {
       case ValType::F64:
         OS << retrieveValue<double>(Rhs.Args[I]);
         break;
+      case ValType::V128: {
+        const auto Value = retrieveValue<uint128_t>(Rhs.Args[I]);
+        OS << std::hex << uint64_t(Value >> 64) << uint64_t(Value);
+        break;
+      }
       case ValType::FuncRef:
         OS << ValTypeStr[Rhs.ArgsTypes[I]];
         if (isNullRef(Rhs.Args[I])) {

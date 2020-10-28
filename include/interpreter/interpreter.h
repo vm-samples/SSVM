@@ -205,6 +205,17 @@ private:
                        const AST::UnaryNumericInstruction &Instr);
   Expect<void> execute(Runtime::StoreManager &StoreMgr,
                        const AST::BinaryNumericInstruction &Instr);
+  Expect<void> execute(Runtime::StoreManager &StoreMgr,
+                       const AST::SIMDMemoryInstruction &Instr);
+  Expect<void> execute(Runtime::StoreManager &StoreMgr,
+                       const AST::SIMDConstInstruction &Instr);
+  Expect<void> execute(Runtime::StoreManager &StoreMgr,
+                       const AST::SIMDShuffleInstruction &Instr);
+  Expect<void> execute(Runtime::StoreManager &StoreMgr,
+                       const AST::SIMDLaneInstruction &Instr);
+  Expect<void> execute(Runtime::StoreManager &StoreMgr,
+                       const AST::SIMDNumericInstruction &Instr);
+
   /// @}
 
   /// \name Helper Functions for block controls.
@@ -419,31 +430,31 @@ public:
   Expect<void> dataDrop(Runtime::StoreManager &StoreMgr,
                         const uint32_t DataIdx) noexcept;
 
-  Expect<ValVariant> tableGet(Runtime::StoreManager &StoreMgr,
+  Expect<RefVariant> tableGet(Runtime::StoreManager &StoreMgr,
                               const uint32_t TableIndex,
                               const uint32_t Idx) noexcept;
   Expect<void> tableSet(Runtime::StoreManager &StoreMgr,
                         const uint32_t TableIndex, const uint32_t Idx,
-                        const ValVariant Ref) noexcept;
+                        const RefVariant Ref) noexcept;
   Expect<void> tableCopy(Runtime::StoreManager &StoreMgr,
                          const uint32_t TableIndexSrc,
                          const uint32_t TableIndexDst, const uint32_t Dst,
                          const uint32_t Src, const uint32_t Len) noexcept;
   Expect<uint32_t> tableGrow(Runtime::StoreManager &StoreMgr,
-                             const uint32_t TableIndex, const ValVariant Val,
+                             const uint32_t TableIndex, const RefVariant Val,
                              const uint32_t NewSize) noexcept;
   Expect<uint32_t> tableSize(Runtime::StoreManager &StoreMgr,
                              const uint32_t TableIndex) noexcept;
   Expect<void> tableFill(Runtime::StoreManager &StoreMgr,
                          const uint32_t TableIndex, const uint32_t Off,
-                         const ValVariant Ref, const uint32_t Len) noexcept;
+                         const RefVariant Ref, const uint32_t Len) noexcept;
   Expect<void> tableInit(Runtime::StoreManager &StoreMgr,
                          const uint32_t TableIndex, const uint32_t ElemIndex,
                          const uint32_t Dst, const uint32_t Src,
                          const uint32_t Len) noexcept;
   Expect<void> elemDrop(Runtime::StoreManager &StoreMgr,
                         const uint32_t ElemIndex) noexcept;
-  Expect<ValVariant> refFunc(Runtime::StoreManager &StoreMgr,
+  Expect<RefVariant> refFunc(Runtime::StoreManager &StoreMgr,
                              const uint32_t FuncIndex) noexcept;
 
   static void signalEnable() noexcept;

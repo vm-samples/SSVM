@@ -24,14 +24,14 @@ namespace Instance {
 class ElementInstance {
 public:
   ElementInstance() = delete;
-  ElementInstance(const RefType EType, Span<const ValVariant> Init)
+  ElementInstance(const RefType EType, Span<const RefVariant> Init)
       : Type(EType), Refs(Init.begin(), Init.end()) {}
 
   /// Get reference type of element instance.
   RefType getRefType() const { return Type; }
 
   /// Get reference lists in element instance.
-  Span<const ValVariant> getRefs() const noexcept { return Refs; }
+  Span<const RefVariant> getRefs() const noexcept { return Refs; }
 
   /// Clear references in element instance.
   void clear() { Refs.clear(); }
@@ -40,7 +40,7 @@ private:
   /// \name Data of element instance.
   /// @{
   const RefType Type;
-  std::vector<ValVariant> Refs;
+  std::vector<RefVariant> Refs;
   /// @}
 };
 

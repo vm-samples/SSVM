@@ -20,18 +20,19 @@
 namespace SSVM {
 
 /// Definition of number_type.
-using ValVariant =
-    Variant<uint32_t, uint64_t, float, double, FuncRef, ExternRef>;
+using RefVariant = Variant<uint64_t, FuncRef, ExternRef>;
+using ValVariant = Variant<uint32_t, uint64_t, uint128_t, float, double,
+                           RefVariant, FuncRef, ExternRef>;
 using Byte = uint8_t;
 
 /// Reference types helper functions.
-inline constexpr ValVariant genNullRef(const RefType Type) {
-  return static_cast<uint64_t>(0);
+inline constexpr RefVariant genNullRef(const RefType Type) {
+  return UINT64_C(0);
 }
-inline constexpr ValVariant genFuncRef(const uint32_t Idx) {
+inline constexpr RefVariant genFuncRef(const uint32_t Idx) {
   return FuncRef{1, Idx};
 }
-template <typename T> inline ValVariant genExternRef(T *Ref) {
+template <typename T> inline RefVariant genExternRef(T *Ref) {
   return ExternRef{reinterpret_cast<uint64_t *>(Ref)};
 }
 
@@ -48,6 +49,12 @@ template <> inline ValType ValTypeFromType<uint64_t>() noexcept {
 }
 template <> inline ValType ValTypeFromType<int64_t>() noexcept {
   return ValType::I64;
+}
+template <> inline ValType ValTypeFromType<uint128_t>() noexcept {
+  return ValType::V128;
+}
+template <> inline ValType ValTypeFromType<int128_t>() noexcept {
+  return ValType::V128;
 }
 template <> inline ValType ValTypeFromType<float>() noexcept {
   return ValType::F32;
